@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Scan outputs / big artifacts
+run_artifacts/
+**/report.html
+**/report.pdf
