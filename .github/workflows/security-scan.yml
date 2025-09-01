@@ -12,23 +12,20 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           # Syft + Grype
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh  | sh -s -- -b /usr/local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
-          # Python deps for the HTML report
-          python3 -m pip install --upgrade pip
-          python3 -m pip install jinja2
+          # Python deps (install to user site) and expose ~/.local/bin
+          python3 -m pip install --upgrade --user pip
+          python3 -m pip install --user jinja2 bandit semgrep
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-          # --- Gitleaks (robust: pick the linux_x64 tarball from the release API)
-          GL_URL=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-                    | grep -oE 'https://[^"]+linux_x64\.tar\.gz')
-          curl -sSL "$GL_URL" | sudo tar -xz -C /usr/local/bin gitleaks
+          # Gitleaks (official installer script picks the right binary)
+          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | bash -s -- -b /usr/local/bin
 
           # Trivy
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
           # HTML → PDF
           sudo apt-get update
@@ -39,16 +36,112 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force run_artifacts | Out-Null
 
-          # SBOM + Grype
+          # Stub venv file so run_all.ps1 summary doesn't fail when no venv is scanned
+          '{"matches":[]}' | Set-Content -Encoding utf8 run_artifacts/grype.venv.json
+
+          # SBOM + vulnerability scan (repo only)
           ./run_all.ps1 -RepoPath ./ -VenvSite ""
 
-          # These tools may exit non-zero; don't fail the job for findings
-          & semgrep --config auto --json --output run_artifacts/semgrep.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
-          & bandit -r . -f json -o run_artifacts/bandit.json                     ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
-          & gitleaks detect --source . -f json -r run_artifacts/gitleaks.json    ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
-          & trivy config --format json --output run_artifacts/trivy_config.json .; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
+          # Extra analyzers (call as python modules to avoid PATH problems)
+          python3 -m semgrep --config auto --json --output run_artifacts/semgrep.json .
+          python3 -m bandit  -r . -f json -o run_artifacts/bandit.json
+          gitleaks detect --source . -f json -r run_artifacts/gitleaks.json
+          trivy config --format json --output run_artifacts/trivy_config.json .
 
-          # Build HTML (cross-platform) and then PDF
+          # Write a small report builder (portable; reads from run_artifacts/*)
+          @'
+          import json, os, datetime
+          from jinja2 import Template
+
+          ART = "run_artifacts"
+          def load(p):
+              try:
+                  with open(p, "r", encoding="utf-8") as f: return json.load(f)
+              except Exception:
+                  return None
+
+          data = {
+            "grype":      load(os.path.join(ART, "grype.json")),
+            "grype_venv": load(os.path.join(ART, "grype.venv.json")),
+            "semgrep":    load(os.path.join(ART, "semgrep.json")),
+            "bandit":     load(os.path.join(ART, "bandit.json")),
+            "gitleaks":   load(os.path.join(ART, "gitleaks.json")),
+            "trivy":      load(os.path.join(ART, "trivy_config.json")),
+          }
+
+          def grype_summary(obj):
+              if not obj: return {"total":0,"by_sev":{},"top":[]}
+              matches = obj.get("matches", [])
+              by = {}
+              for m in matches:
+                  sev = (m.get("vulnerability") or {}).get("severity","Unknown")
+                  by[sev] = by.get(sev,0)+1
+              return {"total":len(matches), "by_sev": by}
+
+          def semgrep_summary(obj):
+              if not obj: return {"total":0}
+              return {"total": len(obj.get("results", []))}
+
+          def bandit_summary(obj):
+              if not obj: return {"total":0}
+              return {"total": len(obj.get("results", []))}
+
+          def gitleaks_summary(obj):
+              if not obj: return {"total":0}
+              leaks = obj.get("leaks", [])
+              return {"total": len(leaks) if isinstance(leaks, list) else 0}
+
+          def trivy_summary(obj):
+              if not obj: return {"total":0}
+              if isinstance(obj.get("Results"), list):
+                  return {"total": sum(len(r.get("Misconfigurations",[])) for r in obj["Results"])}
+              return {"total": len(obj.get("Misconfigurations", [])) if "Misconfigurations" in obj else obj.get("Count", 0)}
+
+          summary = {
+            "generated":  datetime.datetime.now().isoformat(timespec="seconds"),
+            "grype":      grype_summary(data["grype"]),
+            "grype_venv": grype_summary(data["grype_venv"]),
+            "semgrep":    semgrep_summary(data["semgrep"]),
+            "bandit":     bandit_summary(data["bandit"]),
+            "gitleaks":   gitleaks_summary(data["gitleaks"]),
+            "trivy":      trivy_summary(data["trivy"]),
+          }
+
+          tpl = Template("""
+          <!doctype html><meta charset="utf-8"><title>Security Scan Report</title>
+          <style>
+           body{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:2rem}
+           h1{margin-bottom:.25rem} h2{margin-top:1.5rem}
+           table{border-collapse:collapse;width:100%;margin:.5rem 0 1rem}
+           th,td{border:1px solid #ddd;padding:.45rem .6rem;font-size:14px}
+           th{background:#f5f5f5;text-align:left}
+           .muted{color:#666;font-size:12px}
+          </style>
+          <h1>Security Scan Report</h1>
+          <div class="muted">Generated: {{ generated }}</div>
+
+          <h2>Grype (repo)</h2>
+          <table><tr><td>Total</td><td>{{ grype.total }}</td></tr>
+          <tr><td>By severity</td><td>
+            {% for k,v in grype.by_sev.items() %}{{k}}={{v}}{{ ", " if not loop.last }}{% endfor %}
+          </td></tr></table>
+
+          <h2>Grype (venv)</h2>
+          <table><tr><td>Total</td><td>{{ grype_venv.total }}</td></tr>
+          <tr><td>By severity</td><td>
+            {% for k,v in grype_venv.by_sev.items() %}{{k}}={{v}}{{ ", " if not loop.last }}{% endfor %}
+          </td></tr></table>
+
+          <h2>Semgrep</h2><table><tr><td>Total findings</td><td>{{ semgrep.total }}</td></tr></table>
+          <h2>Bandit</h2><table><tr><td>Total findings</td><td>{{ bandit.total }}</td></tr></table>
+          <h2>Gitleaks</h2><table><tr><td>Total leaks</td><td>{{ gitleaks.total }}</td></tr></table>
+          <h2>Trivy (IaC/config)</h2><table><tr><td>Total issues</td><td>{{ trivy.total }}</td></tr></table>
+          """)
+          os.makedirs(ART, exist_ok=True)
+          open(os.path.join(ART,"report.html"),"w",encoding="utf-8").write(tpl.render(**summary))
+          print("Wrote run_artifacts/report.html")
+          '@ | Set-Content -Encoding UTF8 make_report.py
+
           python3 make_report.py
           wkhtmltopdf run_artifacts/report.html run_artifacts/report.pdf
 
