@@ -15,15 +15,20 @@ jobs:
         run: |
           set -euxo pipefail
           # Syft + Grype
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh  | sh -s -- -b /usr/local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-          # Python deps
+
+          # Python deps for report + linters
           python3 -m pip install --upgrade pip
           python3 -m pip install jinja2 bandit semgrep
-          # Gitleaks (install to ~/.local/bin)
-          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | bash -s -- -b "$HOME/.local/bin"
+
+          # Gitleaks (correct URL; install into ~/.local/bin and put it on PATH)
+          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/main/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
           # Trivy
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
           # HTML → PDF
           sudo apt-get update
           sudo apt-get install -y wkhtmltopdf
@@ -36,13 +41,13 @@ jobs:
           # SBOM + Grype for the repo (no venv in CI)
           ./run_all.ps1 -RepoPath ./ -VenvSite ""
 
-          # Extra analyzers (never fail the job for non-zero exit codes)
-          & semgrep --config auto --json --output run_artifacts/semgrep.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
-          & bandit -r . -f json -o run_artifacts/bandit.json                     ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
-          & ~/.local/bin/gitleaks detect --source . -f json -r run_artifacts/gitleaks.json ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
-          & trivy config --format json --output run_artifacts/trivy_config.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
+          # Extra analyzers (don’t fail the job if these exit non-zero)
+          & semgrep --config auto --json --output run_artifacts/semgrep.json .            ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
+          & bandit -r . -f json -o run_artifacts/bandit.json                               ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
+          & gitleaks detect --source . -f json -r run_artifacts/gitleaks.json              ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
+          & trivy config --format json --output run_artifacts/trivy_config.json .          ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
 
-          # Build HTML + PDF
+          # Build HTML + PDF from collected JSON
           python3 make_report.py
           wkhtmltopdf run_artifacts/report.html run_artifacts/report.pdf
 
