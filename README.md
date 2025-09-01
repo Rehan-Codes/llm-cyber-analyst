@@ -1,0 +1,1 @@
+[![security-scan](https://github.com/Rehan-Codes/llm-cyber-analyst/actions/workflows/security-scan.yml/badge.svg)](https://github.com/Rehan-Codes/llm-cyber-analyst/actions/workflows/security-scan.yml)
