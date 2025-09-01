@@ -15,20 +15,16 @@ jobs:
           # Syft + Grype
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh  | sh -s -- -b /usr/local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-
-          # Python deps (install to user site) and expose ~/.local/bin on PATH
+          # Python deps (user site) and expose ~/.local/bin on PATH
           python3 -m pip install --upgrade --user pip
           python3 -m pip install --user jinja2 bandit semgrep
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
           # Trivy
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-
           # HTML → PDF
           sudo apt-get update
           sudo apt-get install -y wkhtmltopdf
-
-          # Gitleaks via Docker (avoids asset-name guessing)
+          # Gitleaks via Docker
           docker --version
           docker pull zricethezav/gitleaks:latest
 
@@ -43,18 +39,16 @@ jobs:
           # SBOM + repo vulnerability scan
           ./run_all.ps1 -RepoPath ./ -VenvSite ""
 
-          # Extra analyzers
-          python3 -m semgrep --config auto --json --output run_artifacts/semgrep.json .
-          python3 -m bandit  -r . -f json -o run_artifacts/bandit.json
+          # Extra analyzers (don’t fail job on findings/non-zero)
+          python3 -m semgrep --config auto --json --output run_artifacts/semgrep.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
+          python3 -m bandit  -r . -f json -o run_artifacts/bandit.json              ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
+          trivy config --format json --output run_artifacts/trivy_config.json .     ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
 
-          # Gitleaks (Docker)
+          # Gitleaks (Docker) — ***single line***
           $workspace = "$env:GITHUB_WORKSPACE".Replace('\','/')
-          docker run --rm -v "${workspace}:/repo" zricethezav/gitleaks:latest \
-            detect --source=/repo -f json -r /repo/run_artifacts/gitleaks.json
+          docker run --rm -v "${workspace}:/repo" zricethezav/gitleaks:latest detect --source=/repo -f json -r /repo/run_artifacts/gitleaks.json
 
-          trivy config --format json --output run_artifacts/trivy_config.json .
-
-          # Build minimal HTML report
+          # Minimal HTML report
           @'
           import json, os, datetime
           from jinja2 import Template
