@@ -16,7 +16,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # Syft + Grype
+          # Syft + Grype (vendors provide these install scripts)
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh  | sh -s -- -b /usr/local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
@@ -24,14 +24,20 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install jinja2 bandit semgrep
 
-          # Gitleaks — install from release tarball (reliable)
-          curl -sSfL \
-            https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_Linux_x86_64.tar.gz \
-            -o /tmp/gitleaks.tar.gz
+          # ---- GITLEAKS (robust) ----
+          # Choose correct tarball for the runner arch and install to ~/.local/bin
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64)  GL_TGZ="gitleaks_Linux_x86_64.tar.gz" ;;
+            aarch64) GL_TGZ="gitleaks_Linux_arm64.tar.gz"   ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/latest/download/${GL_TGZ}" -o /tmp/gitleaks.tgz
           mkdir -p "$HOME/.local/bin"
-          tar -xzf /tmp/gitleaks.tar.gz -C "$HOME/.local/bin" gitleaks
+          tar -xzf /tmp/gitleaks.tgz -C "$HOME/.local/bin" gitleaks
           chmod +x "$HOME/.local/bin/gitleaks"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # ---------------------------
 
           # Trivy
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
@@ -41,15 +47,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wkhtmltopdf
 
+      - name: Verify tools on PATH (sanity check)
+        shell: bash
+        run: |
+          set -eux
+          syft --version
+          grype --version
+          gitleaks version
+          trivy --version
+          python3 --version
+          semgrep --version || true
+          bandit --version || true
+
       - name: Run scans and build report
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force run_artifacts | Out-Null
 
-          # SBOM + Grype (script in repo)
+          # SBOM + Grype (your script)
           ./run_all.ps1 -RepoPath ./ -VenvSite ""
 
-          # Extra analyzers (don't fail the job on non-zero tool exit)
+          # Extra analyzers (don’t fail job if they exit non-zero)
           if (Get-Command semgrep -ErrorAction SilentlyContinue) {
             & semgrep --config auto --json --output run_artifacts/semgrep.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
           }
@@ -63,7 +81,7 @@ jobs:
             & trivy config --format json --output run_artifacts/trivy_config.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
           }
 
-          # Build HTML from repo script, then PDF
+          # Build HTML report and then PDF
           python3 make_report.py
           wkhtmltopdf run_artifacts/report.html run_artifacts/report.pdf
 
