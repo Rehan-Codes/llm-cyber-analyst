@@ -24,12 +24,12 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install jinja2 bandit semgrep
 
-          # Golang (reliable way to get gitleaks) + wkhtmltopdf for PDF export
+          # Golang + wkhtmltopdf
           sudo apt-get update
           sudo apt-get install -y golang-go wkhtmltopdf
 
-          # Gitleaks via Go (avoids changing asset names / 404s)
-          go install github.com/gitleaks/gitleaks/v8@latest
+          # ✅ Gitleaks via the correct Go module path
+          go install github.com/zricethezav/gitleaks/v8@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
           # Trivy
@@ -56,7 +56,7 @@ jobs:
           # SBOM + Grype
           ./run_all.ps1 -RepoPath ./ -VenvSite ""
 
-          # Extra analyzers (don't fail job if a tool exits non-zero)
+          # Extra analyzers (don't fail the job on non-zero tool exit)
           if (Get-Command semgrep -ErrorAction SilentlyContinue) {
             & semgrep --config auto --json --output run_artifacts/semgrep.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
           }
