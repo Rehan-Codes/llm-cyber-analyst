@@ -1,5 +1,8 @@
 name: security-scan
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   scan:
@@ -17,11 +20,11 @@ jobs:
           # Python deps
           python3 -m pip install --upgrade pip
           python3 -m pip install jinja2 bandit semgrep
-          # Gitleaks (official script -> ~/.local/bin)
+          # Gitleaks (install to ~/.local/bin)
           curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | bash -s -- -b "$HOME/.local/bin"
           # Trivy
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          # HTML → PDF renderer
+          # HTML → PDF
           sudo apt-get update
           sudo apt-get install -y wkhtmltopdf
 
@@ -30,7 +33,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force run_artifacts | Out-Null
 
-          # SBOM + Grype (repo only in CI)
+          # SBOM + Grype for the repo (no venv in CI)
           ./run_all.ps1 -RepoPath ./ -VenvSite ""
 
           # Extra analyzers (never fail the job for non-zero exit codes)
@@ -39,7 +42,7 @@ jobs:
           & ~/.local/bin/gitleaks detect --source . -f json -r run_artifacts/gitleaks.json ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
           & trivy config --format json --output run_artifacts/trivy_config.json . ; if ($LASTEXITCODE -ne 0) { $LASTEXITCODE = 0 }
 
-          # Build HTML summary & export PDF
+          # Build HTML + PDF
           python3 make_report.py
           wkhtmltopdf run_artifacts/report.html run_artifacts/report.pdf
 
